@@ -1,0 +1,215 @@
+#!/var/ossec/framework/python/bin/python3
+"""BORRADOR: Integrator -> Grype registry por digest -> eventos JSON, sin estado.
+
+Prueba sin conexión: python custom-grype ALERT --report RESULTADO --stdout --config CONFIG
+La prueba con --report exige --stdout: nunca reinyecta fixtures al manager.
+"""
+import argparse
+import datetime as dt
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+
+TRIGGERS = {"100261"}
+SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+def read_json(path):
+    with open(path, encoding="utf-8-sig") as stream:
+        return json.load(stream)
+
+
+def request_from_alert(alert, config):
+    if str(alert.get("rule", {}).get("id")) not in TRIGGERS:
+        raise ValueError("unsupported_trigger")
+    data = alert.get("data", {})
+    meta = data.get("poc", {})
+    if data.get("integration") != "docker" or meta.get("event_type") != "image" or meta.get("action") != "pull":
+        raise ValueError("unsupported_event")
+    if meta.get("identity_status") != "ok":
+        raise ValueError("image_identity_unavailable")
+    image_id = meta.get("image_id", "")
+    if not SHA256.fullmatch(image_id):
+        raise ValueError("invalid_image_id")
+    identity_kind = meta.get("identity_kind")
+    if identity_kind not in {"config", "manifest"}:
+        raise ValueError("invalid_image_identity_kind")
+    platform = meta.get("platform", "")
+    if not re.fullmatch(r"linux/(amd64|arm64|arm)(/v[0-9]+)?", platform):
+        raise ValueError("unsupported_platform")
+    target = meta.get("repo_digest", "")
+    if "@" not in target:
+        raise ValueError("missing_registry_digest")
+    repository, digest = target.rsplit("@", 1)
+    if repository.startswith("library/"):
+        repository = "docker.io/" + repository
+    elif "/" not in repository:
+        repository = "docker.io/library/" + repository
+    if repository not in config["allowed_repositories"] or not SHA256.fullmatch(digest):
+        raise ValueError("repository_or_digest_not_allowed")
+    agent = alert.get("agent", {})
+    if not re.fullmatch(r"[0-9]{3,8}", agent.get("id", "")) or agent["id"] == "000":
+        raise ValueError("invalid_agent")
+    name = agent.get("name", "")
+    if not re.fullmatch(r"[A-Za-z0-9_. -]{1,128}", name):
+        raise ValueError("invalid_agent_name")
+    if agent.get("ip"):
+        ipaddress.ip_address(agent["ip"])
+    engine = meta.get("engine_id", "")
+    if not isinstance(engine, str) or not re.fullmatch(r"[A-Za-z0-9:_.-]{1,160}", engine):
+        raise ValueError("invalid_engine_id")
+    return {"agent": agent, "image_id": image_id, "identity_kind": identity_kind, "image_ref": str(meta.get("image_ref", ""))[:256],
+            "platform": platform, "target": repository + "@" + digest, "engine_id": engine,
+            "profile": config["profile"], "trigger_id": str(alert.get("id", ""))[:128]}
+
+
+def normalise_report(report, request, config, now=None):
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if not isinstance(report, dict) or not isinstance(report.get("matches"), list):
+        raise ValueError("invalid_or_incomplete_report")
+    if report.get("ignoredMatches"):
+        raise ValueError("filtered_report_not_accepted")
+    descriptor = report.get("descriptor", {})
+    if descriptor.get("version") != config["expected_grype_version"]:
+        raise ValueError("scanner_version_mismatch")
+    status = descriptor.get("db", {}).get("status", {})
+    if status.get("valid") is not True:
+        raise ValueError("invalid_database")
+    built = dt.datetime.fromisoformat(status.get("built", "").replace("Z", "+00:00"))
+    if built.tzinfo is None or not dt.timedelta(0) <= now - built <= dt.timedelta(hours=config["max_db_age_hours"]):
+        raise ValueError("stale_or_invalid_database_time")
+    source = report.get("source", {})
+    target = source.get("target", {})
+    compared_id = target.get("manifestDigest") if request["identity_kind"] == "manifest" else target.get("imageID")
+    if source.get("type") != "image" or compared_id != request["image_id"]:
+        raise ValueError("scanned_image_does_not_match_endpoint")
+    if not SHA256.fullmatch(target.get("imageID", "")):
+        raise ValueError("invalid_scanner_config_digest")
+    os_name, architecture, *variant = request["platform"].split("/")
+    if target.get("os") != os_name or target.get("architecture") != architecture:
+        raise ValueError("scanned_platform_does_not_match_endpoint")
+    findings = {}
+    for match in report["matches"]:
+        vulnerability, artifact = match["vulnerability"], match["artifact"]
+        required = [vulnerability["id"], vulnerability["namespace"], artifact["name"], artifact["version"], artifact["type"]]
+        if not all(isinstance(value, str) and value for value in required):
+            raise ValueError("incomplete_finding")
+        # Versiones y rutas distintas son hallazgos distintos; no usar solo el CVE.
+        locations = sorted({str(item["path"]) for item in artifact.get("locations", [])})
+        identity = required + [artifact.get("purl", ""), locations]
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        severity = vulnerability.get("severity", "Unknown")
+        if severity not in {"Critical", "High", "Medium", "Low", "Negligible", "Unknown"}:
+            severity = "Unknown"
+        fix = vulnerability.get("fix") or {}
+        findings[key] = {"finding_id": key, "vulnerability_id": required[0], "namespace": required[1],
+                         "package": required[2], "version": required[3], "package_type": required[4],
+                         "severity": severity, "fix": ",".join(fix.get("versions") or [])[:200]}
+    if len(findings) > config["max_findings"]:
+        raise ValueError("too_many_findings_no_partial_report")
+    return findings, {"scanner_version": descriptor["version"], "scanner_image_id": target["imageID"], "db_built": status["built"],
+                      "db_schema": str(status.get("schemaVersion", ""))}
+
+
+def events_for_report(request, findings, metadata):
+    base = {key: request[key] for key in ("image_id", "identity_kind", "image_ref", "platform", "target", "engine_id", "profile", "trigger_id")}
+    base.update(metadata)
+    scan_id = hashlib.sha256((request["agent"]["id"] + json.dumps(base, sort_keys=True)).encode()).hexdigest()
+    base["scan_id"] = scan_id
+    rows = [{"integration": "grype_poc", "grype_poc": dict(base, event="finding", **value)} for value in findings.values()]
+    rows.append({"integration": "grype_poc", "grype_poc": dict(base, event="scan_complete", total=len(findings))})
+    return rows
+
+
+def queue_message(event, agent):
+    location = "[{}] ({}) {}".format(agent["id"], agent["name"], agent.get("ip", "any"))
+    location = location.replace("|", "||").replace(":", "|:")
+    raw = ("1:" + location + "->grype-poc:" + json.dumps(event, ensure_ascii=True, separators=(",", ":"))).encode()
+    if len(raw) > 5500:
+        raise ValueError("event_too_large")
+    return raw
+
+
+def run_grype(request, config):
+    import fcntl  # Solo ejecución real en el manager Linux.
+    # Una variable heredada como GRYPE_ONLY_FIXED no debe cambiar el perfil.
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("GRYPE_", "SYFT_"))}
+    env.update({"GRYPE_DB_CACHE_DIR": config["db_cache_dir"], "GRYPE_DB_AUTO_UPDATE": "false",
+                "GRYPE_DB_VALIDATE_AGE": "true", "GRYPE_CHECK_FOR_APP_UPDATE": "false"})
+    with open(config["lock_file"], "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("scan_busy_retry_manually")
+        # Archivos efímeros; el JSON completo no pasa por el canal de eventos.
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            command = [config["grype_bin"], "registry:" + request["target"], "--scope", "squashed", "--platform", request["platform"],
+                       "--config", config["grype_config"], "-o", "json"]
+            result = subprocess.run(command, env=env, stdout=out, stderr=err, timeout=config["timeout_seconds"], check=False)
+            if result.returncode != 0:
+                raise ValueError("grype_failed_exit_" + str(result.returncode))
+            if out.tell() > config["max_report_bytes"]:
+                raise ValueError("grype_report_too_large")
+            out.seek(0)
+            return json.load(out)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("alert")
+    parser.add_argument("--config", default=str(Path(__file__).with_name("custom-grype.json")))
+    parser.add_argument("--report")
+    parser.add_argument("--stdout", action="store_true")
+    args, wazuh_arguments = parser.parse_known_args()
+    if args.report and not args.stdout:
+        parser.error("--report exige --stdout; los datos de ensayo no se envían al manager")
+    config = read_json(args.config)
+    alert = read_json(args.alert)
+    request = None
+    try:
+        request = request_from_alert(alert, config)
+        report = read_json(args.report) if args.report else run_grype(request, config)
+        findings, metadata = normalise_report(report, request, config)
+        events = events_for_report(request, findings, metadata)
+        # Validar todos los tamaños antes de emitir el primer evento.
+        payloads = [queue_message(event, request["agent"]) for event in events]
+    except Exception as exc:
+        # No copiar stderr ni configuración del scanner: pueden incluir secretos de un registry.
+        reason = str(exc) if isinstance(exc, ValueError) and re.fullmatch(r"[a-z0-9_]+", str(exc)) else type(exc).__name__
+        event = {"integration": "grype_poc", "grype_poc": {"event": "scan_error", "reason": reason,
+                 "trigger_id": str(alert.get("id", ""))[:128]}}
+        if args.stdout:
+            print(json.dumps(event))
+        elif request is not None:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+                client.settimeout(5)
+                client.connect(config["queue_socket"])
+                client.send(queue_message(event, request["agent"]))
+        else:
+            # Con identidad no válida no atribuir el error a un agente no verificado.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+                client.settimeout(5)
+                client.connect(config["queue_socket"])
+                client.send(("1:grype-poc:" + json.dumps(event)).encode())
+        return 1
+    if args.stdout:
+        for event in events:
+            print(json.dumps(event))
+    else:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+            client.settimeout(5)
+            client.connect(config["queue_socket"])
+            for payload in payloads:
+                client.send(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

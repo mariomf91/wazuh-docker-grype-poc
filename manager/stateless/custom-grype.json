@@ -1,0 +1,14 @@
+{
+  "grype_bin": "/var/ossec/integrations/grype-poc-bin/grype",
+  "grype_config": "/var/ossec/integrations/grype-poc.yaml",
+  "db_cache_dir": "/var/ossec/queue/grype-poc/db",
+  "queue_socket": "/var/ossec/queue/sockets/queue",
+  "lock_file": "/var/ossec/queue/grype-poc/scan.lock",
+  "allowed_repositories": ["docker.io/library/alpine", "docker.io/library/nginx", "docker.io/library/busybox"],
+  "expected_grype_version": "0.121.0",
+  "profile": "poc-v1-squashed-no-ignore",
+  "max_db_age_hours": 120,
+  "timeout_seconds": 180,
+  "max_report_bytes": 52428800,
+  "max_findings": 10000
+}

@@ -1,0 +1,3 @@
+# No convertir saltos de línea: custom-grype y grype-poc.yaml tienen su SHA256 fijado
+# en manager/stateful/custom-grype-stateful.json y un cambio rompería la comprobación.
+* -text

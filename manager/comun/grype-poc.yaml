@@ -1,0 +1,10 @@
+# Perfil explícito; no heredar un .grype.yaml del directorio del usuario.
+check-for-app-update: false
+only-fixed: false
+only-notfixed: false
+ignore: []
+exclude: []
+db:
+  auto-update: false
+  validate-age: true
+  max-allowed-built-age: 120h

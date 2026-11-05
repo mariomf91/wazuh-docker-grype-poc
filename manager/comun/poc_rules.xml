@@ -1,0 +1,63 @@
+<!-- BORRADOR. IDs 100260-100276: comprobar colisiones antes de instalar.
+     Separado de las reglas históricas 100210/100250/100251 y 100220-100226. -->
+<group name="local,container_poc,">
+  <rule id="100261" level="10">
+    <if_sid>87932</if_sid>
+    <field name="poc.image_ref" type="pcre2">.+</field>
+    <field name="poc.event_type">^image$</field>
+    <field name="poc.action">^pull$</field>
+    <list field="poc.image_ref" lookup="not_match_key">etc/lists/poc-imagenes-permitidas</list>
+    <description>PoC: imagen $(poc.image_ref) descargada fuera de la lista permitida.</description>
+    <group>poc_image_policy,</group>
+  </rule>
+  <rule id="100262" level="10">
+    <if_sid>87901</if_sid>
+    <field name="poc.event_type">^container$</field>
+    <field name="poc.action">^create$</field>
+    <list field="poc.image_ref" lookup="not_match_key">etc/lists/poc-imagenes-permitidas</list>
+    <description>PoC: contenedor creado desde $(poc.image_ref), fuera de la lista permitida.</description>
+    <group>poc_image_policy,</group>
+  </rule>
+  <rule id="100263" level="10">
+    <if_sid>87903</if_sid>
+    <field name="poc.event_type">^container$</field>
+    <field name="poc.action">^start$</field>
+    <list field="poc.image_ref" lookup="not_match_key">etc/lists/poc-imagenes-permitidas</list>
+    <description>PoC: contenedor iniciado desde $(poc.image_ref), fuera de la lista permitida.</description>
+    <group>poc_image_policy,</group>
+  </rule>
+  <rule id="100264" level="7">
+    <decoded_as>json</decoded_as>
+    <field name="integration">^poc_collector$</field>
+    <description>PoC: fallo del colector de Docker.</description>
+  </rule>
+  <rule id="100270" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="integration">^grype_poc$</field>
+    <description>PoC: resultado externo de Grype.</description>
+  </rule>
+  <rule id="100271" level="14">
+    <if_sid>100270</if_sid><field name="grype_poc.event">^finding$</field><field name="grype_poc.severity">^Critical$</field>
+    <description>Grype PoC Critical: $(grype_poc.vulnerability_id) en $(grype_poc.package) $(grype_poc.version), imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100272" level="12">
+    <if_sid>100270</if_sid><field name="grype_poc.event">^finding$</field><field name="grype_poc.severity">^High$</field>
+    <description>Grype PoC High: $(grype_poc.vulnerability_id) en $(grype_poc.package) $(grype_poc.version), imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100273" level="7">
+    <if_sid>100270</if_sid><field name="grype_poc.event">^finding$</field><field name="grype_poc.severity">^Medium$</field>
+    <description>Grype PoC Medium: $(grype_poc.vulnerability_id) en $(grype_poc.package), imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100274" level="3">
+    <if_sid>100270</if_sid><field name="grype_poc.event">^finding$</field><field name="grype_poc.severity" type="pcre2">^(Low|Negligible|Unknown)$</field>
+    <description>Grype PoC $(grype_poc.severity): $(grype_poc.vulnerability_id) en $(grype_poc.package), imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100275" level="3">
+    <if_sid>100270</if_sid><field name="grype_poc.event">^scan_complete$</field>
+    <description>Grype PoC: escaneo completo de $(grype_poc.image_ref), $(grype_poc.total) hallazgos.</description>
+  </rule>
+  <rule id="100276" level="7">
+    <if_sid>100270</if_sid><field name="grype_poc.event">^scan_error$</field>
+    <description>Grype PoC: escaneo no disponible, $(grype_poc.reason).</description>
+  </rule>
+</group>

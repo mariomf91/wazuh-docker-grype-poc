@@ -1,0 +1,178 @@
+#!/var/ossec/framework/python/bin/python3
+"""Borrador de integración stateful. No se instala hasta confirmar el alcance.
+
+--status: lectura del estado. --flush: reintento explícito de pendientes.
+Los informes de ensayo requieren --report, --stdout y --sandbox-db distintos del estado real.
+"""
+import argparse
+from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import sys
+
+sys.dont_write_bytecode = True
+from grype_state_store import StateStore, digest, run_key
+
+
+def read_json(path):
+    with open(path,encoding='utf-8-sig') as stream:
+        return json.load(stream)
+
+
+def load_core(config):
+    path = Path(config['core_path'])
+    if hashlib.sha256(path.read_bytes()).hexdigest() != config['core_sha256']:
+        raise ValueError('core_script_changed_review_required')
+    profile = Path(config['grype_config'])
+    if hashlib.sha256(profile.read_bytes()).hexdigest() != config['profile_sha256']:
+        raise ValueError('scan_profile_changed_review_required')
+    loader = importlib.machinery.SourceFileLoader('grype_validated_core',str(path))
+    spec = importlib.util.spec_from_loader(loader.name,loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def enrich_request(alert, request, config):
+    event = alert.get('data',{}).get('docker',{})
+    if event.get('Type') != 'image' or event.get('Action') != 'pull':
+        raise ValueError('event_envelope_mismatch')
+    try:
+        stamp = Decimal(str(event['timeNano']))
+        if not stamp.is_finite() or stamp != stamp.to_integral_value() or not 0 < stamp <= 9223372036854775807:
+            raise ValueError('invalid_precise_event_time')
+    except (KeyError,InvalidOperation):
+        raise ValueError('missing_precise_event_time')
+    if not request.get('trigger_id'):
+        raise ValueError('missing_trigger_id')
+    request = dict(request,event_ns=int(stamp))
+    request['profile'] = config['profile']+':'+digest([config['core_sha256'],config['profile_sha256']])
+    return request
+
+
+@contextmanager
+def integration_lock(path):
+    import fcntl
+    with open(path,'a') as handle:
+        try:
+            fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('integration_busy_retry_manually')
+        yield
+
+
+def safe_reason(exc):
+    return str(exc) if isinstance(exc,ValueError) and re.fullmatch(r'[a-z0-9_]+',str(exc)) else type(exc).__name__
+
+
+def audit(config, value):
+    value = dict(value)
+    from grype_state_store import utc_now
+    value['utc'] = utc_now()
+    line = json.dumps(value,separators=(',',':'))+'\n'
+    path = Path(config['audit_log'])
+    try:
+        if path.exists() and path.stat().st_size >= config['max_audit_bytes']:
+            print('audit_log_limit',file=sys.stderr)
+        else:
+            with path.open('a',encoding='utf-8') as stream:
+                stream.write(line)
+    except OSError:
+        print('audit_write_failed',file=sys.stderr)
+
+
+def process_alert(alert,config,core,store,send,report=None):
+    request = enrich_request(alert,core.request_from_alert(alert,config),config)
+    validate_event = lambda event: core.queue_message(event,request['agent'])
+    run_id = run_key(request,config['expected_grype_version'])
+    # Un reenvío de la misma alerta drena pendientes; no vuelve a escanear ni retrocede el estado.
+    if store.has_run(run_id):
+        delivery = store.drain(send,limit=config['max_flush_per_call'])
+        return {'status':'duplicate','run_id':run_id,'delivery':delivery}
+    try:
+        document = report if report is not None else core.run_grype(request,config)
+        findings,metadata = core.normalise_report(document,request,config)
+        result = store.commit_scan(request,findings,metadata,validate_event=validate_event)
+    except Exception as exc:
+        reason = safe_reason(exc)
+        # Registrar el error no cambia snapshots ni marca este run como completado.
+        metadata = {'scanner_version':config['expected_grype_version']}
+        try:
+            store.record_error(request,metadata,reason,validate_event=validate_event)
+        except Exception as recording_error:
+            return {'status':'error','run_id':run_id,'reason':reason,'error_recording':safe_reason(recording_error)}
+        delivery = store.drain(send,limit=config['max_flush_per_call'])
+        return {'status':'error','run_id':run_id,'reason':reason,'delivery':delivery}
+    result['delivery'] = store.drain(send,limit=config['max_flush_per_call'])
+    return result
+
+
+def main():
+    os.umask(0o007)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('alert',nargs='?')
+    parser.add_argument('--config',default=str(Path(__file__).with_name('custom-grype-stateful.json')))
+    parser.add_argument('--flush',action='store_true')
+    parser.add_argument('--status',action='store_true')
+    parser.add_argument('--report')
+    parser.add_argument('--stdout',action='store_true')
+    parser.add_argument('--sandbox-db')
+    args,unused_wazuh_args = parser.parse_known_args()
+    if (args.report or args.stdout or args.sandbox_db) and not (args.report and args.stdout and args.sandbox_db):
+        parser.error('El ensayo de informes exige --report, --stdout y --sandbox-db juntos')
+    if args.status and (args.alert or args.flush or args.report):
+        parser.error('--status solo permite lectura')
+    if args.flush and (args.alert or args.report):
+        parser.error('--flush no admite alerta ni fixture')
+    config = read_json(args.config)
+    if args.status:
+        print(json.dumps(StateStore.inspect(config['state_db'])))
+        return 0
+    if not args.flush and not args.alert:
+        parser.error('Falta la alerta')
+    sandbox = bool(args.report)
+    if sandbox and Path(args.sandbox_db).resolve() == Path(config['state_db']).resolve():
+        parser.error('El sandbox no puede usar la base real')
+    try:
+        core = load_core(config)
+        def send(event,agent):
+            if sandbox:
+                print(json.dumps(event))
+            else:
+                with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as client:
+                    client.settimeout(5)
+                    client.connect(config['queue_socket'])
+                    client.send(core.queue_message(event,agent))
+        def run():
+            store = StateStore(args.sandbox_db if sandbox else config['state_db'],config['max_pending'],config['max_outbox_rows'],config['max_scopes'])
+            if args.flush:
+                return {'status':'flush','delivery':store.drain(send,limit=config['max_flush_per_call'])}
+            alert = read_json(args.alert)
+            return process_alert(alert,config,core,store,send,report=read_json(args.report) if sandbox else None)
+        if sandbox:
+            result = run()
+        else:
+            with integration_lock(config['integration_lock_file']):
+                result = run()
+            audit(config,result)
+        print(json.dumps({'stateful_result':result}))
+        if result.get('status') == 'error':
+            return 1
+        return 2 if result.get('delivery',{}).get('pending',0) else 0
+    except Exception as exc:
+        result = {'status':'error','reason':safe_reason(exc)}
+        if not sandbox:
+            audit(config,result)
+        print(json.dumps({'stateful_result':result}))
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

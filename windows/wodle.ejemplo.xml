@@ -1,0 +1,14 @@
+<!-- Incorporar dentro de ossec_config del agente Windows existente; no reemplazarlo.
+     La ruta de -LogPath debe ser la misma que la de localfile.ejemplo.xml.
+     El script lo ejecuta LocalSystem: instalarlo en una carpeta que solo puedan
+     modificar administradores y SYSTEM (ver docs/wodle.md).
+     Intervalo corto a proposito: cada ejecucion lee solo los eventos nuevos y termina. -->
+<wodle name="command">
+  <disabled>no</disabled>
+  <tag>docker-events</tag>
+  <command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\WazuhPoC\wodle\collector-windows-wodle.ps1" -LogPath "C:\WazuhPoC\runtime\docker-events.jsonl"</command>
+  <interval>10s</interval>
+  <run_on_start>yes</run_on_start>
+  <timeout>60</timeout>
+  <ignore_output>yes</ignore_output>
+</wodle>

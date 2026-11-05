@@ -1,0 +1,6 @@
+<!-- Plantilla de entrega: sustituir la ruta para que coincida con -LogPath.
+     Incorporar dentro de ossec_config del agente existente; no reemplazarlo. -->
+<localfile>
+  <log_format>json</log_format>
+  <location>C:\WazuhPoC\runtime\docker-events.jsonl</location>
+</localfile>

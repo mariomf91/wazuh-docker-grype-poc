@@ -1,0 +1,29 @@
+{
+  "grype_bin": "/var/ossec/integrations/grype-poc-bin/grype",
+  "grype_config": "/var/ossec/integrations/grype-poc.yaml",
+  "db_cache_dir": "/var/ossec/queue/grype-poc/db",
+  "queue_socket": "/var/ossec/queue/sockets/queue",
+  "lock_file": "/var/ossec/queue/grype-poc-stateful/grype-scan.lock",
+  "allowed_repositories": [
+    "docker.io/library/alpine",
+    "docker.io/library/nginx",
+    "docker.io/library/busybox"
+  ],
+  "expected_grype_version": "0.121.0",
+  "profile": "poc-stateful-v1-squashed-no-ignore",
+  "max_db_age_hours": 120,
+  "timeout_seconds": 180,
+  "max_report_bytes": 52428800,
+  "max_findings": 10000,
+  "core_path": "/var/ossec/integrations/custom-grype",
+  "core_sha256": "f63de251b0784112828d0f72900041a3af2cd30442028b6eafad6125dab13922",
+  "profile_sha256": "87013a20e859497e633e3df005bb4ac432eeb16b734a8e28bfa604a926da6c66",
+  "state_db": "/var/ossec/queue/grype-poc-stateful/state.sqlite3",
+  "integration_lock_file": "/var/ossec/queue/grype-poc-stateful/integration.lock",
+  "audit_log": "/var/ossec/queue/grype-poc-stateful/audit.jsonl",
+  "max_audit_bytes": 1048576,
+  "max_pending": 5000,
+  "max_outbox_rows": 50000,
+  "max_scopes": 1000,
+  "max_flush_per_call": 1000
+}

@@ -1,0 +1,35 @@
+<group name="local,container_poc_stateful,">
+  <rule id="100280" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="integration">^grype_poc_stateful$</field>
+    <description>Resultado de la PoC Grype stateful.</description>
+  </rule>
+  <rule id="100281" level="14">
+    <if_sid>100280</if_sid><field name="grype_poc.event">^finding$</field><field name="grype_poc.severity">^Critical$</field>
+    <description>Grype stateful $(grype_poc.change): $(grype_poc.vulnerability_id) Critical en $(grype_poc.package), imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100282" level="12">
+    <if_sid>100280</if_sid><field name="grype_poc.event">^finding$</field><field name="grype_poc.severity">^High$</field>
+    <description>Grype stateful $(grype_poc.change): $(grype_poc.vulnerability_id) High en $(grype_poc.package), imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100283" level="7">
+    <if_sid>100280</if_sid><field name="grype_poc.event">^finding$</field><field name="grype_poc.severity">^Medium$</field>
+    <description>Grype stateful $(grype_poc.change): $(grype_poc.vulnerability_id) Medium en $(grype_poc.package), imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100284" level="3">
+    <if_sid>100280</if_sid><field name="grype_poc.event">^finding$</field><field name="grype_poc.severity" type="pcre2">^(Low|Negligible|Unknown)$</field>
+    <description>Grype stateful $(grype_poc.change): $(grype_poc.vulnerability_id) $(grype_poc.severity) en $(grype_poc.package), imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100285" level="3">
+    <if_sid>100280</if_sid><field name="grype_poc.event">^scan_complete$</field>
+    <description>Grype stateful: $(grype_poc.total) hallazgos; $(grype_poc.new_count) nuevos, $(grype_poc.unchanged_count) sin cambios, imagen $(grype_poc.image_ref).</description>
+  </rule>
+  <rule id="100286" level="7">
+    <if_sid>100280</if_sid><field name="grype_poc.event">^scan_error$</field>
+    <description>Grype stateful: error $(grype_poc.reason); no se sustituye el estado por un escaneo vacío.</description>
+  </rule>
+  <rule id="100287" level="3">
+    <if_sid>100280</if_sid><field name="grype_poc.event">^not_observed$</field>
+    <description>Grype stateful: $(grype_poc.vulnerability_id) ya no observado en la misma imagen $(grype_poc.image_ref); no implica corrección confirmada.</description>
+  </rule>
+</group>

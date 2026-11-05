@@ -1,0 +1,15 @@
+# Datos de ejecución: nunca al repositorio
+*.jsonl
+*.state.json
+*.sqlite3
+*.sqlite3-journal
+audit.jsonl
+
+# Las pruebas escriben su resultado junto al script
+validation-*.json
+__pycache__/
+*.pyc
+
+# Binario y caché de Grype
+grype-poc-bin/
+*.db
