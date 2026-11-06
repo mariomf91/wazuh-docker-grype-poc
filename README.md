@@ -111,4 +111,4 @@ Con `alpine:3.19` y la misma base de Grype, stateless dio 14 hallazgos en cada u
 
 `collector-windows-wodle.ps1` deriva de `windows/original/collector-windows.ps1`; la lógica de identidad de la imagen es la misma. Los archivos del manager conservan sus bytes originales, porque `custom-grype` y `grype-poc.yaml` tienen el SHA256 fijado en `custom-grype-stateful.json`. Por eso `.gitattributes` desactiva la conversión de saltos de línea.
 
-Licencia: sin definir todavía. No reutilizar ni redistribuir hasta decidirla.
+Licencia: [MIT](LICENSE).
