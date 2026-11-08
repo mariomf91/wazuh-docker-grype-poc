@@ -11,23 +11,37 @@ Hay dos modos de análisis:
 
 ## Cómo funciona
 
-```text
-WINDOWS (agente Wazuh)
-Docker Desktop (engine Linux)
-  -> wodle "command" cada 10 s: collector-windows-wodle.ps1
-  -> docker-events.jsonl
-  -> agente Wazuh (localfile, formato json)
-                     |
-                     v
-MANAGER WAZUH
-Reglas Docker (87932) -> lista CDB de imágenes permitidas -> regla 100261 (imagen fuera de lista)
-  -> Integrator -> UNA de estas integraciones:
-       stateless: custom-grype -> Grype -> todos los hallazgos
-       stateful:  custom-grype-stateful -> Grype -> SQLite, comparación y pendientes -> cambios
-  -> socket local de Wazuh -> reglas de resultados -> alerts.json
-                     |
-                     v
-Filebeat -> indexer -> dashboard (Threat Hunting > Events)
+```mermaid
+flowchart LR
+  subgraph Endpoint["Equipo Windows"]
+    Docker["Docker Desktop<br/>engine Linux"]
+    Collector["Colector PowerShell<br/>wodle command cada 10 s"]
+    Log["docker-events.jsonl"]
+    Agent["Agente Wazuh<br/>localfile en formato JSON"]
+    Docker --> Collector --> Log --> Agent
+  end
+
+  subgraph Manager["Manager Wazuh"]
+    Policy["Reglas Docker 87932<br/>lista CDB → regla 100261"]
+    Mode{"Imagen fuera de lista"}
+    Stateless["custom-grype<br/>stateless"]
+    Stateful["custom-grype-stateful<br/>stateful"]
+    GrypeS["Grype"]
+    GrypeT["Grype"]
+    SQLite[("SQLite<br/>snapshot + pendientes")]
+    Results["Socket local<br/>reglas de resultados"]
+    Agent --> Policy
+    Policy --> Mode
+    Mode -->|stateless| Stateless --> GrypeS
+    Mode -->|stateful| Stateful --> GrypeT --> SQLite
+    GrypeS --> Results
+    SQLite --> Results
+  end
+
+  Registry["Registro<br/>imagen por digest"]
+  Registry --> GrypeS
+  Registry --> GrypeT
+  Results --> Dashboard["alerts.json → Filebeat → indexer<br/>dashboard: Threat Hunting > Events"]
 ```
 
 Grype y SQLite viven en el manager. El manager obtiene la imagen del registro por digest, así que no necesita acceso al engine Docker del equipo Windows. El endpoint solo usa PowerShell, Docker CLI y su agente.
@@ -87,7 +101,14 @@ Son versiones observadas, no una matriz de compatibilidad certificada.
 
 ## Resultados
 
-Con `alpine:3.19` y la misma base de Grype, stateless dio 14 hallazgos en cada uno de dos pulls; stateful dio 14 nuevos en el primero y 0 nuevos (14 sin cambios) en el segundo. Con el colector como wodle, ejecutado por el agente como LocalSystem, un pull llegó a la alerta de política en unos 4 s y al resumen de Grype en unos 11 s (una sola medición). Detalle y límites en [docs/resultados-y-limites.md](docs/resultados-y-limites.md).
+Comparación con `alpine:3.19` y la misma base de Grype (27 de octubre de 2026):
+
+| Modo | Primer pull | Segundo pull | Avisos de hallazgos |
+|---|---:|---:|---:|
+| Stateless | 14 hallazgos | 14 repetidos | 28 |
+| Stateful | 14 nuevos | 0 nuevos; 14 sin cambios | 14 |
+
+Los 14 hallazgos correspondían a 6 identificadores de vulnerabilidad distintos. La tabla cuenta avisos de hallazgos, no los eventos resumen de cada análisis. Con el colector como wodle, ejecutado por el agente como LocalSystem, un pull llegó a la alerta de política en unos 4 s y al resumen de Grype en unos 11 s (una sola medición). Detalle y límites en [docs/resultados-y-limites.md](docs/resultados-y-limites.md).
 
 ## Límites principales
 
